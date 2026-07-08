@@ -4,13 +4,28 @@ function ts(): string {
   return new Date().toISOString().slice(11, 19); // HH:MM:SS
 }
 
-export function logRoute(accountId: string, requestCount: number, expiresInMin: number): void {
+export function logRoute(accountId: string, requestCount: number, expiresInMin: number, user?: string): void {
   console.log(
     chalk.gray(`[${ts()}]`) +
     chalk.green(` → ${accountId}`) +
+    (user ? chalk.blueBright(` [${user}]`) : "") +
     chalk.gray(` req#${requestCount}`) +
     chalk.yellow(` exp=${expiresInMin}min`)
   );
+}
+
+/**
+ * Log a rejected connection attempt at the auth boundary. `reason` is a short
+ * label ("no token" / "invalid token") — the presented token is never logged.
+ */
+export function logAuthReject(clientIp: string, reason: string, method?: string, path?: string): void {
+  const where = method && path ? ` ${method} ${path}` : "";
+  console.log(chalk.red(`[${ts()}] [AUTH] ✗ rejected ${clientIp}${where} — ${reason}`));
+}
+
+/** Log an accepted connection at the auth boundary (first request per user). */
+export function logAuthAccept(user: string, clientIp: string): void {
+  console.log(chalk.green(`[${ts()}] [AUTH] ✓ accepted ${user} from ${clientIp}`));
 }
 
 export function logRefresh(accountId: string, ok: boolean, expiresInMin?: number): void {

@@ -20,7 +20,7 @@ Distribute Claude Code requests across Claude subscriptions, and expose an OpenA
 - **Claude Desktop support** — route Cowork / Agent-mode traffic through CC-Router via mitmproxy interception (macOS, Windows, Linux)
 - **Guided setup wizard** — interactive `cc-router setup` extracts tokens from Keychain or credentials file, configures everything
 - **Live dashboard** — real-time terminal UI showing account health, request counts, token usage, recent activity
-- **Proxy authentication** — optional Bearer / x-api-key secret for internet-exposed deployments
+- **Proxy authentication** — optional shared secret, or per-user access keys (`cc-router keys add <user>`) that can be granted and revoked individually, with per-user attribution in the dashboard
 - **Auto-update** — patch/minor releases install automatically (opt-out available)
 - **Multiple deployment modes** — background daemon, native OS auto-start (launchd/systemd), foreground, Docker Compose
 - **Cross-platform** — macOS, Linux, Windows; Node.js 20+
@@ -182,7 +182,18 @@ Each developer then points to:
 }
 ```
 
-**Security note:** if the proxy is internet-accessible, add authentication at the nginx level (basic auth, mTLS, or IP allowlist) so only your team can use it. cc-router does not implement user authentication itself.
+**Security note:** if the proxy is internet-accessible, protect it. cc-router has built-in authentication with two options:
+
+- **Shared secret** — one password for everyone (`cc-router configure` → set a proxy password).
+- **Per-user access keys** — a unique key per person, granted and revoked individually:
+
+  ```bash
+  cc-router keys add alice     # prints alice's key once — she uses it as ANTHROPIC_AUTH_TOKEN
+  cc-router keys add bob
+  cc-router keys list          # show users, masked keys, and live request counts
+  cc-router keys revoke alice  # cut off one person without touching the others
+  ```
+
 
 ---
 
@@ -308,6 +319,10 @@ cc-router configure codex --model openai/gpt-5-codex
 cc-router configure models --claude-model claude-sonnet-4-6 --openai-model gpt-5-codex
 cc-router configure --show   Show current Claude Code proxy settings
 cc-router configure --remove Remove cc-router settings (same as revert without stopping)
+
+cc-router keys add <user>    Generate a per-user access key (printed once)
+cc-router keys list          List access keys (masked) with live request counts
+cc-router keys revoke <user> Remove a user's access key
 
 cc-router client connect <url>       Connect Claude Code to a remote CC-Router
 cc-router client connect --desktop   Also configure Claude Desktop interception

@@ -1,7 +1,7 @@
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { ServerResponse } from "http";
-import { timingSafeEqual } from "crypto";
+import { buildCredentials, extractPresented, authenticate, describeAuthFailure } from "./auth.js";
 import type { IncomingMessage } from "http";
 import type { Socket } from "net";
 import type { Request } from "express";
@@ -11,7 +11,7 @@ import { loadAccounts, loadOpenAIAccounts, saveOpenAIAccounts, accountsFileExist
 import { checkForUpdate, performUpdate, restartSelf } from "../utils/self-update.js";
 import { trackEvent, startHeartbeat } from "../utils/telemetry.js";
 import { loadTelemetryState } from "../config/telemetry.js";
-import { logRoute, logError, logStartup } from "./logger.js";
+import { logRoute, logError, logStartup, logAuthReject, logAuthAccept } from "./logger.js";
 import { stats } from "./stats.js";
 import type { LogEntry } from "./stats.js";
 import { PROXY_PORT, LITELLM_URL } from "../config/paths.js";
@@ -32,6 +32,7 @@ declare module "express-serve-static-core" {
     _ccAccount?: Account;
     _startTime?: number;
     _pendingLog?: Partial<LogEntry>;
+    _authUser?: string;
   }
 }
 
@@ -237,6 +238,17 @@ function extractRateLimits(headers: Record<string, string | string[] | undefined
   };
 }
 
+/**
+ * Best-effort client IP for connection logging. Prefers the first hop in
+ * X-Forwarded-For (set by an nginx reverse proxy) and falls back to the
+ * socket's remote address for direct connections.
+ */
+function clientIpOf(req: Request): string {
+  const fwd = req.headers["x-forwarded-for"];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(",")[0];
+  return first?.trim() || req.socket.remoteAddress || "unknown";
+}
+
 export async function startServer(opts: ServerOptions = {}): Promise<void> {
   const port = opts.port ?? PROXY_PORT;
 
@@ -290,32 +302,41 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
   const proxyRequestTimeoutMs = getProxyRequestTimeoutMs();
 
   // ─── Proxy auth middleware ─────────────────────────────────────────────────
-  // If a proxySecret is configured, all requests must present it as EITHER
+  // When auth is configured, all requests must present a valid credential as
   //   "Authorization: Bearer <secret>" (Claude Code CLI, HTTP clients)
   //   OR "x-api-key: <secret>" (Claude Desktop via mitmproxy, Anthropic SDK)
+  // Two credential sources are accepted, in this order:
+  //   1. The legacy single `proxySecret` (shared, all-or-nothing).
+  //   2. Any enabled entry in `authorizedKeys` (per-user, individually revocable).
+  // The matched key's owner is stashed on the request for per-user attribution.
   // The /cc-router/health endpoint is always exempt so monitoring and PM2
   // healthchecks keep working.
-  const { proxySecret } = initialConfig;
-  if (proxySecret) {
-    const secretBuf = Buffer.from(proxySecret, "utf-8");
+  const credentials = buildCredentials(initialConfig);
+  const authEnabled = credentials.length > 0;
+
+  // Users seen at least once this run — used to log an "accepted" line the
+  // first time each key connects, without logging every subsequent request
+  // (per-request routing is already logged by logRoute).
+  const seenUsers = new Set<string>();
+
+  if (authEnabled) {
     app.use((req, res, next) => {
       if (req.path === "/cc-router/health") return next();
 
-      const auth = (req.headers["authorization"] as string | undefined) ?? "";
-      const bearerToken = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-      const apiKey = (req.headers["x-api-key"] as string | undefined) ?? "";
-      const presented = bearerToken || apiKey;
-      const presentedBuf = Buffer.from(presented, "utf-8");
-
-      if (
-        presentedBuf.length !== secretBuf.length ||
-        !timingSafeEqual(presentedBuf, secretBuf)
-      ) {
+      const clientIp = clientIpOf(req);
+      const outcome = authenticate(credentials, extractPresented(req.headers));
+      if (!outcome.ok) {
+        logAuthReject(clientIp, describeAuthFailure(outcome), req.method, req.path);
         res.status(401).json({
           type: "error",
           error: { type: "authentication_error", message: "Invalid or missing proxy authentication token" },
         });
         return;
+      }
+      req._authUser = outcome.user;
+      if (!seenUsers.has(outcome.user)) {
+        seenUsers.add(outcome.user);
+        logAuthAccept(outcome.user, clientIp);
       }
       next();
     });
@@ -334,11 +355,12 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
       operational: createOperationalStatus({
         mode,
         target,
-        authRequired: Boolean(proxySecret),
+        authRequired: authEnabled,
         accounts: accountViews,
         modelRouting,
       }),
       uptime: stats.getUptimeSeconds(),
+      usageByUser: stats.getUsageByUser(),
       totalRequests: stats.totalRequests,
       totalErrors: stats.totalErrors,
       totalRefreshes: stats.totalRefreshes,
@@ -851,13 +873,16 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
       method: req.method,
       path: req.path,
       source,
+      user: req._authUser,
     };
     stats.totalRequests++;
+    stats.incrUser(req._authUser);
 
     logRoute(
       account.id,
       account.requestCount,
       Math.round((account.tokens.expiresAt - Date.now()) / 60_000),
+      req._authUser,
     );
 
     next();

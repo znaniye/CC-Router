@@ -180,8 +180,24 @@ export interface RunPreferences {
   configureClaudeCode?: boolean;
 }
 
+/**
+ * A single named access key. Each person on a shared/hosted deployment gets
+ * their own unique key so access can be granted and revoked individually —
+ * unlike the single shared `proxySecret`, which is all-or-nothing.
+ */
+export interface AuthorizedKey {
+  /** Human-readable owner label, e.g. "alice". Unique within the list. */
+  user: string;
+  /** The secret token the client presents as a Bearer / x-api-key. */
+  key: string;
+  /** When false, the key is rejected. Default: true. */
+  enabled?: boolean;
+}
+
 export interface ProxyConfig {
   proxySecret?: string;
+  /** Per-user access keys accepted alongside the legacy `proxySecret`. */
+  authorizedKeys?: AuthorizedKey[];
   /** Upstream proxy request timeout in milliseconds. Default: 300000 (5 minutes). */
   proxyRequestTimeoutMs?: number;
   /** Deprecated typo-compatible alias for proxyRequestTimeoutMs. */
@@ -239,6 +255,50 @@ export function writeConfig(cfg: ProxyConfig): void {
 
 export function generateProxySecret(): string {
   return "cc-rtr-" + randomBytes(16).toString("hex");
+}
+
+/**
+ * Generate a per-user access key. Uses an `sk-proxy-` prefix so it looks like a
+ * standard `sk-` API token to clients and is recognizable in logs.
+ */
+export function generateUserKey(): string {
+  return "sk-proxy-" + randomBytes(16).toString("hex");
+}
+
+export function listAuthorizedKeys(): AuthorizedKey[] {
+  return readConfig().authorizedKeys ?? [];
+}
+
+/**
+ * Create and persist a new access key for `user`. Throws if a key already
+ * exists for that user. Returns the created record (including the secret).
+ */
+export function addAuthorizedKey(user: string): AuthorizedKey {
+  const trimmed = user.trim();
+  if (!trimmed) throw new Error("user must not be empty");
+
+  const cfg = readConfig();
+  const keys = cfg.authorizedKeys ?? [];
+  if (keys.some(k => k.user === trimmed)) {
+    throw new Error(`An access key for "${trimmed}" already exists`);
+  }
+
+  const record: AuthorizedKey = { user: trimmed, key: generateUserKey(), enabled: true };
+  writeConfig({ ...cfg, authorizedKeys: [...keys, record] });
+  return record;
+}
+
+/**
+ * Remove the access key for `user`. Returns true if a key was removed,
+ * false if no matching key existed.
+ */
+export function revokeAuthorizedKey(user: string): boolean {
+  const cfg = readConfig();
+  const keys = cfg.authorizedKeys ?? [];
+  const next = keys.filter(k => k.user !== user);
+  if (next.length === keys.length) return false;
+  writeConfig({ ...cfg, authorizedKeys: next });
+  return true;
 }
 
 // ─── Accounts ─────────────────────────────────────────────────────────────────

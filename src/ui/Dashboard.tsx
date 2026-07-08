@@ -61,6 +61,7 @@ interface HealthData {
   totalOutputTokens?: number;
   accounts: AccountStat[];
   recentLogs: LogEntry[];
+  usageByUser?: Record<string, number>;
 }
 
 interface OperationalStatus {
@@ -642,6 +643,16 @@ function LiveDashboard({
       {/* ── Recent activity ── */}
       <Box flexDirection="column">
         <Text bold> RECENT ACTIVITY</Text>
+        {(() => {
+          const usage = Object.entries(data.usageByUser ?? {}).sort((a, b) => b[1] - a[1]);
+          if (usage.length === 0) return null;
+          return (
+            <Text color="gray">
+              {"  keys: "}
+              {usage.map(([u, n]) => `${u} ${n}`).join("  ·  ")}
+            </Text>
+          );
+        })()}
         <Box marginTop={1} flexDirection="column">
           {visibleLogs.length === 0
             ? <Text color="gray">  No activity yet</Text>
@@ -969,6 +980,7 @@ function LogRow({ log, selected }: { log: LogEntry; selected: boolean }) {
       <Text backgroundColor={bg} color={fg(typeColor)}>{typeIcon} </Text>
       <Text backgroundColor={bg} color={fg(sourceColor)}>{sourceLabel} </Text>
       <Text backgroundColor={bg} color={fg("cyan")}>{log.accountId.slice(0, 22).padEnd(22)}</Text>
+      <Text backgroundColor={bg} color={fg("blueBright")}>{(log.user ? `[${log.user}]` : "").slice(0, 12).padEnd(12)}</Text>
       {log.method && log.path
         ? <Text backgroundColor={bg} color={fg("white")}> {log.method} {log.path.padEnd(14)}</Text>
         : <Text backgroundColor={bg} color={fg(typeColor)}> {log.type.padEnd(9)}</Text>
